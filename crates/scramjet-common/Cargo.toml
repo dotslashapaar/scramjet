@@ -1,0 +1,15 @@
+[package]
+name = "scramjet-common"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+
+[dependencies]
+solana-sdk = { workspace = true }
+rustls = { workspace = true }
+rcgen = { workspace = true }
+quinn = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }

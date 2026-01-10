@@ -1,0 +1,27 @@
+[package]
+name = "scramjet-cli"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+# Internal Libraries
+scramjet-common = { workspace = true }
+scramjet-net = { workspace = true }
+
+# Core Async & CLI
+tokio = { workspace = true }
+clap = { workspace = true }
+log = { workspace = true }
+env_logger = { workspace = true }
+
+# Solana Ecosystem
+solana-sdk = { workspace = true }
+solana-client = { workspace = true }
+anyhow = { workspace = true }
+
+# Utilities
+dirs = { workspace = true }      # To find the user's wallet (~/.config/solana/id.json)
+bincode = { workspace = true } 
+dotenv = { workspace = true }     

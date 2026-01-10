@@ -1,0 +1,42 @@
+[package]
+name = "scramjet-net"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+# Internal Logic
+scramjet-common = { workspace = true }
+
+# Solana Ecosystem
+# We need 'sdk' for types (Pubkey, Keypair) and 'client' for RPC calls.
+solana-sdk = { workspace = true }
+solana-client = { workspace = true }
+solana-rpc-client-api = { workspace = true }
+
+# Core Async Runtime
+tokio = { workspace = true }
+
+# Networking (The Engine)
+quinn = { workspace = true }
+rustls = { workspace = true }
+
+# Error Handling & Logging
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+log = { workspace = true }
+
+# Concurrency
+dashmap = "5.5"
+
+# Geyser Integration
+yellowstone-grpc-proto = { workspace = true }
+tonic = { workspace = true }
+tokio-stream = { workspace = true }
+futures = { workspace = true }
+http = { workspace = true }
+
+[dev-dependencies]
+# Required for the "Mock Server" in our integration tests.
+rcgen = { workspace = true }

@@ -1,0 +1,18 @@
+# Rust build artifacts
+/target
+
+# Environment files (secrets)
+.env
+.env.local
+
+# IDE / Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Rust-specific
+**/*.rs.bk
+*.pdb
