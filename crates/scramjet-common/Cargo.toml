@@ -8,8 +8,10 @@ license.workspace = true
 
 [dependencies]
 solana-sdk = { workspace = true }
+solana-client = { workspace = true }
 rustls = { workspace = true }
 rcgen = { workspace = true }
 quinn = { workspace = true }
+tonic = { workspace = true }
 thiserror = { workspace = true }
 anyhow = { workspace = true }

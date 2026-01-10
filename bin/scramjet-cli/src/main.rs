@@ -1,7 +1,7 @@
 use anyhow::Context;
 use clap::{Parser, Subcommand};
 use dotenv::dotenv;
-use log::{debug, error, info};
+use log::{debug, error, info, warn};
 use scramjet_common::Config;
 use scramjet_net::{cartographer::Cartographer, engine::QuicEngine, geyser::spawn_geyser_monitor};
 use solana_sdk::{
@@ -13,6 +13,7 @@ use solana_sdk::{
 };
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 #[derive(Parser)]
 #[command(name = "scramjet")]
@@ -71,11 +72,14 @@ async fn main() -> anyhow::Result<()> {
 
     let keypair_path = cli.keypair.unwrap_or_else(|| {
         dirs::home_dir()
-            .expect("No home directory found. Set --keypair explicitly.")
+            .unwrap_or_else(|| {
+                // Fall back to current directory if no home directory
+                std::env::current_dir().expect("Cannot determine current directory")
+            })
             .join(".config/solana/id.json")
     });
     let identity = read_keypair_file(&keypair_path)
-        .map_err(|e| anyhow::anyhow!("Failed to load keypair from {:?}: {}", keypair_path, e))?;
+        .map_err(|e| anyhow::anyhow!("Failed to load keypair from {:?}: {}. Use --keypair to specify path.", keypair_path, e))?;
     info!("Identity: {}", identity.pubkey());
 
     // STEP 4: Initialize Cartographer (cluster map + leader schedule)
@@ -89,13 +93,28 @@ async fn main() -> anyhow::Result<()> {
         info!("MODE: HYBRID (RPC Map + Geyser Clock)");
         info!("   Geyser Endpoint: {}", url);
         // Use Yellowstone Geyser for real-time slot updates (lowest latency)
-        spawn_geyser_monitor(
+        let startup_rx = spawn_geyser_monitor(
             url.clone(),
             cartographer.clone(),
             config.geyser_reconnect_delay(),
             config.geyser_max_reconnect_delay(),
-        )
-        .await;
+        );
+
+        // Wait up to 10 seconds for initial connection, then continue regardless
+        match tokio::time::timeout(Duration::from_secs(10), startup_rx).await {
+            Ok(Ok(Ok(()))) => {
+                info!("Geyser: Initial connection established.");
+            }
+            Ok(Ok(Err(e))) => {
+                warn!("Geyser: Initial connection failed: {}. Continuing with background retries.", e);
+            }
+            Ok(Err(_)) => {
+                warn!("Geyser: Startup signal lost. Continuing with background retries.");
+            }
+            Err(_) => {
+                warn!("Geyser: Connection timed out after 10s. Continuing with background retries.");
+            }
+        }
     } else {
         info!("MODE: LEGACY (RPC Polling)");
         info!("   (Geyser URL not found in .env or args. Using fallback.)");
@@ -220,7 +239,11 @@ async fn fire_transaction(
     if let Some(addr) = cartographer.get_target(slot).await {
         info!("Target: {}. Firing (Fee: {})...", addr, priority_fee);
         engine.send_transaction(addr, tx_bytes).await?;
-        info!("Sent! Sig: {}", tx.signatures[0]);
+        let sig = tx
+            .signatures
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("Transaction has no signatures"))?;
+        info!("Sent! Sig: {}", sig);
     } else {
         error!("No leader found for slot {}", slot);
     }

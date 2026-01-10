@@ -153,12 +153,22 @@ impl Config {
     }
 }
 
-/// Helper to parse env var with default fallback
-fn parse_env<T: std::str::FromStr>(key: &str, default: T) -> T {
-    env::var(key)
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(default)
+/// Helper to parse env var with default fallback.
+/// Logs a warning if the value exists but fails to parse.
+fn parse_env<T: std::str::FromStr + std::fmt::Display>(key: &str, default: T) -> T {
+    match env::var(key) {
+        Ok(v) => match v.parse() {
+            Ok(parsed) => parsed,
+            Err(_) => {
+                eprintln!(
+                    "Warning: Invalid value for {}: '{}', using default {}",
+                    key, v, default
+                );
+                default
+            }
+        },
+        Err(_) => default,
+    }
 }
 
 #[cfg(test)]

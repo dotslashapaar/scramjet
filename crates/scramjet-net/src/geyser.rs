@@ -1,10 +1,11 @@
 use crate::cartographer::Cartographer;
 use http::Uri;
 use log::{error, info};
+use scramjet_common::ScramjetError;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::transport::{Channel, Endpoint};
 use tonic::{service::Interceptor, Request, Status};
@@ -39,7 +40,7 @@ impl GeyserListener {
     pub async fn connect(
         mut endpoint: String,
         cartographer: Arc<Cartographer>,
-    ) -> anyhow::Result<Self> {
+    ) -> Result<Self, ScramjetError> {
         info!("Geyser: Parsing endpoint...");
 
         // Extract auth token from URL path if present (e.g., https://host/token123)
@@ -53,7 +54,15 @@ impl GeyserListener {
 
                     // Reconstruct clean endpoint without path
                     let scheme = uri.scheme_str().unwrap_or("https");
-                    let authority = uri.authority().unwrap().as_str();
+                    let authority = uri
+                        .authority()
+                        .ok_or_else(|| {
+                            ScramjetError::InvalidUri(format!(
+                                "Geyser URL missing authority: {}",
+                                endpoint
+                            ))
+                        })?
+                        .as_str();
                     endpoint = format!("{}://{}", scheme, authority);
                 }
             }
@@ -62,7 +71,8 @@ impl GeyserListener {
         info!("Geyser: Connecting to {}", endpoint);
 
         // Create gRPC channel with TLS
-        let channel = Endpoint::from_shared(endpoint)?
+        let channel = Endpoint::from_shared(endpoint.clone())
+            .map_err(|e| ScramjetError::InvalidUri(format!("Invalid endpoint: {}", e)))?
             .tls_config(tonic::transport::ClientTlsConfig::new())?
             .connect()
             .await?;
@@ -77,7 +87,7 @@ impl GeyserListener {
         })
     }
 
-    pub async fn start_tracking(&mut self) -> anyhow::Result<()> {
+    pub async fn start_tracking(&mut self) -> Result<(), ScramjetError> {
         info!("Geyser: Subscribing to Slot Updates.");
 
         // Subscribe to slot updates only (minimal data)
@@ -105,7 +115,7 @@ impl GeyserListener {
         let (tx, rx) = mpsc::channel(32);
         tx.send(request)
             .await
-            .map_err(|e| anyhow::anyhow!("Failed to send request: {}", e))?;
+            .map_err(|e| ScramjetError::ChannelError(format!("Failed to send request: {}", e)))?;
         let request_stream = ReceiverStream::new(rx);
 
         let response = self.client.subscribe(request_stream).await?;
@@ -128,15 +138,19 @@ impl GeyserListener {
     }
 }
 
-/// Spawn Geyser monitor with exponential backoff reconnection
-pub async fn spawn_geyser_monitor(
+/// Spawn Geyser monitor with exponential backoff reconnection.
+/// Returns a oneshot receiver that signals when the first connection attempt completes.
+pub fn spawn_geyser_monitor(
     endpoint: String,
     cartographer: Arc<Cartographer>,
     initial_delay: Duration,
     max_delay: Duration,
-) {
+) -> oneshot::Receiver<Result<(), ScramjetError>> {
+    let (startup_tx, startup_rx) = oneshot::channel();
+
     tokio::spawn(async move {
         let mut retry_delay = initial_delay;
+        let mut startup_tx = Some(startup_tx);
 
         // Reconnect loop with exponential backoff
         loop {
@@ -144,6 +158,11 @@ pub async fn spawn_geyser_monitor(
                 Ok(mut listener) => {
                     // Reset backoff on successful connection
                     retry_delay = initial_delay;
+
+                    // Signal startup success (once)
+                    if let Some(tx) = startup_tx.take() {
+                        let _ = tx.send(Ok(()));
+                    }
 
                     if let Err(e) = listener.start_tracking().await {
                         error!(
@@ -153,6 +172,10 @@ pub async fn spawn_geyser_monitor(
                     }
                 }
                 Err(e) => {
+                    // Signal startup failure (once)
+                    if let Some(tx) = startup_tx.take() {
+                        let _ = tx.send(Err(ScramjetError::GeyserError(e.to_string())));
+                    }
                     error!(
                         "Geyser Connection Failed: {}. Retrying in {:?}...",
                         e, retry_delay
@@ -166,4 +189,6 @@ pub async fn spawn_geyser_monitor(
             retry_delay = std::cmp::min(retry_delay * 2, max_delay);
         }
     });
+
+    startup_rx
 }
