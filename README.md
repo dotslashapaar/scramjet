@@ -1,6 +1,9 @@
 # Scramjet
 
-Direct-to-leader Solana transaction submission via QUIC.
+<p align="center">
+ <img alt="scramjet_img" src="https://github.com/user-attachments/assets/6b3d6ad5-b20d-4ab0-90ab-dce1c784c81f" height="257"/>
+</p>
+
 
 ## Summary
 
@@ -138,6 +141,9 @@ scramjet/
                 │  Error Types)         │
                 └───────────────────────┘
 ```
+
+<img width="2547" height="1801" alt="Screenshot From 2026-01-07 16-27-50" src="https://github.com/user-attachments/assets/aa75ee24-39b2-4566-b5f2-cb70d717ba72" />
+
 
 ## Contributing
 
