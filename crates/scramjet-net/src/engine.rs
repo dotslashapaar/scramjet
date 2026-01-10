@@ -1,8 +1,7 @@
-use anyhow::{anyhow, Result};
 use dashmap::DashMap;
 use log::{debug, info};
 use quinn::{Connection, Endpoint};
-use scramjet_common::{create_quic_config, Config};
+use scramjet_common::{create_quic_config, Config, ScramjetError};
 use solana_sdk::signature::Keypair;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -15,7 +14,7 @@ pub struct QuicEngine {
 }
 
 impl QuicEngine {
-    pub fn new(identity: &Keypair, config: &Config) -> Result<Self> {
+    pub fn new(identity: &Keypair, config: &Config) -> Result<Self, ScramjetError> {
         // Create QUIC client config with Solana identity certificate
         let client_config = create_quic_config(identity, config)?;
 
@@ -30,7 +29,11 @@ impl QuicEngine {
     }
 
     /// Standard single-shot send (Thread-safe via DashMap)
-    pub async fn send_transaction(&self, target: SocketAddr, tx_bytes: Vec<u8>) -> Result<()> {
+    pub async fn send_transaction(
+        &self,
+        target: SocketAddr,
+        tx_bytes: Vec<u8>,
+    ) -> Result<(), ScramjetError> {
         // Get or create connection from cache
         let connection = self.get_connection(target).await?;
 
@@ -38,19 +41,13 @@ impl QuicEngine {
         let mut send_stream = connection
             .open_uni()
             .await
-            .map_err(|e| anyhow!("Failed to open stream: {}", e))?;
+            .map_err(|e| ScramjetError::StreamError(format!("Failed to open stream: {}", e)))?;
 
         // Write transaction bytes to stream
-        send_stream
-            .write_all(&tx_bytes)
-            .await
-            .map_err(|e| anyhow!("Failed to write bytes: {}", e))?;
+        send_stream.write_all(&tx_bytes).await?;
 
         // Close stream to signal completion
-        send_stream
-            .finish()
-            .await
-            .map_err(|e| anyhow!("Failed to finish stream: {}", e))?;
+        send_stream.finish().await?;
 
         Ok(())
     }
@@ -58,12 +55,15 @@ impl QuicEngine {
     /// MACHINE GUN OPTIMIZATION:
     /// Returns direct handle for high-frequency sending.
     /// Caller can open multiple streams on same connection (multiplexing).
-    pub async fn get_connection_handle(&self, target: SocketAddr) -> Result<Connection> {
+    pub async fn get_connection_handle(
+        &self,
+        target: SocketAddr,
+    ) -> Result<Connection, ScramjetError> {
         self.get_connection(target).await
     }
 
     /// Internal: Manage connection cache with lock-free reads
-    async fn get_connection(&self, addr: SocketAddr) -> Result<Connection> {
+    async fn get_connection(&self, addr: SocketAddr) -> Result<Connection, ScramjetError> {
         // Fast path: check cache without blocking
         if let Some(conn) = self.connection_cache.get(&addr) {
             if conn.close_reason().is_none() {
@@ -76,10 +76,11 @@ impl QuicEngine {
 
         // Handshake OUTSIDE of any lock (avoids blocking other lookups)
         info!("Handshake: Connecting to leader at {}...", addr);
-        let connecting = self.endpoint.connect(addr, "solana")?;
-        let connection = connecting
-            .await
-            .map_err(|e| anyhow!("Connection failed: {}", e))?;
+        let connecting = self
+            .endpoint
+            .connect(addr, "solana")
+            .map_err(|e| ScramjetError::ConnectionError(format!("Connect failed: {}", e)))?;
+        let connection = connecting.await?;
 
         // Insert with minimal contention
         self.connection_cache.insert(addr, connection.clone());

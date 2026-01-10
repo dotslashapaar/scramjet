@@ -3,6 +3,7 @@ pub mod error;
 pub mod identity;
 
 pub use config::Config;
+pub use error::ScramjetError;
 pub use identity::create_quic_config;
 
 // --- UNIT TEST ---

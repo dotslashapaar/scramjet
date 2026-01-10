@@ -3384,8 +3384,10 @@ dependencies = [
  "quinn",
  "rcgen 0.11.3",
  "rustls",
+ "solana-client",
  "solana-sdk",
  "thiserror",
+ "tonic",
 ]
 
 [[package]]

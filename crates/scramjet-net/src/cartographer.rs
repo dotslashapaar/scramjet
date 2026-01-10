@@ -1,5 +1,5 @@
-use anyhow::{Context, Result};
 use log::{debug, info};
+use scramjet_common::ScramjetError;
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::pubkey::Pubkey;
 use std::collections::HashMap;
@@ -76,13 +76,13 @@ impl Cartographer {
     }
 
     /// Fetch cluster topology (validator pubkey -> QUIC socket mapping)
-    pub async fn refresh_topology(&self) -> Result<()> {
+    pub async fn refresh_topology(&self) -> Result<(), ScramjetError> {
         info!("Refreshing cluster topology via RPC...");
         let nodes = self
             .rpc
             .get_cluster_nodes()
             .await
-            .context("Failed to fetch nodes")?;
+            .map_err(|e| ScramjetError::RpcError(format!("Failed to fetch nodes: {}", e)))?;
         let mut new_map = HashMap::new();
 
         for node in nodes {
@@ -102,8 +102,12 @@ impl Cartographer {
     }
 
     /// Update leader schedule for current epoch (refresh on epoch change)
-    pub async fn update_schedule(&self) -> Result<()> {
-        let epoch_info = self.rpc.get_epoch_info().await?;
+    pub async fn update_schedule(&self) -> Result<(), ScramjetError> {
+        let epoch_info = self
+            .rpc
+            .get_epoch_info()
+            .await
+            .map_err(|e| ScramjetError::RpcError(format!("Failed to get epoch info: {}", e)))?;
         let current_epoch = epoch_info.epoch;
         let stored_epoch = self.current_epoch.load(Ordering::Relaxed);
 
@@ -116,8 +120,9 @@ impl Cartographer {
             let schedule_data = self
                 .rpc
                 .get_leader_schedule(None)
-                .await?
-                .ok_or(anyhow::anyhow!("No schedule returned"))?;
+                .await
+                .map_err(|e| ScramjetError::RpcError(format!("Failed to get leader schedule: {}", e)))?
+                .ok_or(ScramjetError::ScheduleUnavailable)?;
 
             let mut new_schedule = HashMap::new();
             let start_slot = epoch_info.absolute_slot - epoch_info.slot_index;
@@ -141,8 +146,12 @@ impl Cartographer {
     }
 
     /// Fetch current slot from RPC and update tracker (legacy polling mode)
-    pub async fn fetch_rpc_slot(&self) -> Result<u64> {
-        let slot = self.rpc.get_slot().await?;
+    pub async fn fetch_rpc_slot(&self) -> Result<u64, ScramjetError> {
+        let slot = self
+            .rpc
+            .get_slot()
+            .await
+            .map_err(|e| ScramjetError::RpcError(format!("Failed to get slot: {}", e)))?;
         self.update_slot(slot);
         Ok(slot)
     }
