@@ -27,6 +27,7 @@ Built for MEV searchers, traders, and anyone needing the absolute lowest latency
 - **Dual Clock Modes** — Hybrid mode using Yellowstone Geyser gRPC for real-time slot updates, or legacy RPC polling fallback
 - **Leader Schedule Awareness** — Cartographer fetches and caches cluster topology and leader schedules per epoch
 - **Connection Pre-warming** — Scout pre-establishes connections to upcoming leaders with configurable lookahead
+- **Validator Blocklist (Shield)** — Filter out malicious validators with hot-reloadable blocklist
 - **High-Frequency Spam** — Machine gun optimization for rapid transaction submission
 
 ## Quick Start
@@ -94,7 +95,8 @@ scramjet/
 │   │   └── src/
 │   │       ├── engine.rs       # QUIC connection management
 │   │       ├── geyser.rs       # Yellowstone Geyser integration
-│   │       └── cartographer.rs # Leader schedule & cluster topology
+│   │       ├── cartographer.rs # Leader schedule & cluster topology
+│   │       └── blocklist.rs    # Validator blocklist (Shield)
 │   └── scramjet-common/    # Shared utilities
 │       └── src/
 │           ├── config.rs       # Configuration & environment parsing
@@ -117,6 +119,9 @@ scramjet/
 | `QUIC_IDLE_TIMEOUT_SECS` | `10` | QUIC connection idle timeout |
 | `DEFAULT_COMPUTE_UNIT_LIMIT` | `200000` | Compute budget per transaction |
 | `DEFAULT_PRIORITY_FEE` | `100000` | Priority fee in microlamports |
+| `SCRAMJET_BLOCKLIST_FILE` | `./blocklist.txt` | Local blocklist file path |
+| `SCRAMJET_BLOCKLIST_URL` | — | Optional remote blocklist URL |
+| `SCRAMJET_BLOCKLIST_REFRESH_SECS` | `300` | Blocklist reload interval (seconds) |
 
 ## Architecture
 
@@ -144,6 +149,36 @@ scramjet/
 
 <img width="2547" height="1801" alt="Screenshot From 2026-01-07 16-27-50" src="https://github.com/user-attachments/assets/aa75ee24-39b2-4566-b5f2-cb70d717ba72" />
 
+## Validator Blocklist (Shield)
+
+Scramjet Shield protects against malicious validators by filtering them from leader selection.
+
+### Quick Setup
+
+1. Create `blocklist.txt` in the project root:
+   ```bash
+   # Add one validator pubkey per line
+   echo "MALICIOUS_VALIDATOR_PUBKEY_HERE" >> blocklist.txt
+   ```
+
+2. Scramjet automatically loads and hot-reloads the file every 5 minutes
+
+### Features
+
+- **Zero-latency filtering** – O(1) lookup with non-blocking concurrent reads
+- **Hot-reload** – Updates every 5 minutes without restart
+- **Local-first** – No external dependencies by default
+- **Optional remote sync** – Set `SCRAMJET_BLOCKLIST_URL` for community blocklists
+
+### How It Works
+
+When resolving the current leader, Cartographer checks the blocklist:
+- If leader is blocked → returns `None` (transaction skipped)
+- If leader is clean → returns socket address (transaction sent)
+
+Scout pre-warming also filters blocked validators to save resources.
+
+See [explanation.md#updates](explanation.md#updates) for detailed architecture and implementation.
 
 ## Contributing
 

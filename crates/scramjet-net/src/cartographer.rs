@@ -9,6 +9,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
+use crate::blocklist::BlocklistHandle;
+
 /// Cartographer maintains cluster topology and leader schedule
 pub struct Cartographer {
     rpc: Arc<RpcClient>,
@@ -16,10 +18,11 @@ pub struct Cartographer {
     schedule: Arc<RwLock<HashMap<u64, Pubkey>>>,        // Slot -> Leader pubkey
     current_slot: Arc<AtomicU64>,                       // Atomic slot tracker (lock-free)
     current_epoch: Arc<AtomicU64>,
+    blocklist: BlocklistHandle,                          // Shield: blocked validators
 }
 
 impl Cartographer {
-    pub fn new(rpc_url: String) -> Self {
+    pub fn new(rpc_url: String, blocklist: BlocklistHandle) -> Self {
         let rpc = Arc::new(RpcClient::new(rpc_url));
         Self {
             rpc,
@@ -27,6 +30,7 @@ impl Cartographer {
             schedule: Arc::new(RwLock::new(HashMap::new())),
             current_slot: Arc::new(AtomicU64::new(0)),
             current_epoch: Arc::new(AtomicU64::new(0)),
+            blocklist,
         }
     }
 
@@ -44,27 +48,45 @@ impl Cartographer {
     }
 
     /// Resolve leader IP for given slot (pubkey lookup + socket resolution)
+    /// Returns None if leader is blocked by Shield
     pub async fn get_target(&self, slot: u64) -> Option<SocketAddr> {
         // Step 1: Lookup leader pubkey for this slot
         let leader_pubkey = {
             let schedule = self.schedule.read().await;
             schedule.get(&slot).cloned()?
         };
-        // Step 2: Resolve pubkey to QUIC socket address
+        
+        // Step 2: Shield check - skip blocked validators
+        {
+            let blocklist = self.blocklist.read().await;
+            if blocklist.contains(&leader_pubkey) {
+                debug!("Shield: Blocked {} for slot {}", leader_pubkey, slot);
+                return None;
+            }
+        }
+        
+        // Step 3: Resolve pubkey to QUIC socket address
         let node_map = self.node_map.read().await;
         node_map.get(&leader_pubkey).cloned()
     }
 
     /// Returns deduplicated upcoming leader sockets (for Scout pre-warming)
+    /// Filters out blocked validators to save resources
     pub async fn get_upcoming_leaders(&self, current_slot: u64, lookahead: u64) -> Vec<SocketAddr> {
         let mut unique_targets = Vec::new();
         let schedule = self.schedule.read().await;
         let node_map = self.node_map.read().await;
+        let blocklist = self.blocklist.read().await;
 
-        // Collect unique addresses for upcoming slots
+        // Collect unique addresses for upcoming slots (excluding blocked validators)
         for i in 1..=lookahead {
             let target_slot = current_slot + i;
             if let Some(pubkey) = schedule.get(&target_slot) {
+                // Shield: Skip blocked validators
+                if blocklist.contains(pubkey) {
+                    debug!("Shield: Skipping blocked leader {} for scout", pubkey);
+                    continue;
+                }
                 if let Some(addr) = node_map.get(pubkey) {
                     if !unique_targets.contains(addr) {
                         unique_targets.push(*addr);
@@ -164,9 +186,14 @@ impl Cartographer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashSet;
+
+    fn create_empty_blocklist() -> BlocklistHandle {
+        Arc::new(RwLock::new(HashSet::new()))
+    }
 
     fn create_empty_cartographer() -> Cartographer {
-        Cartographer::new("http://mock-rpc".to_string())
+        Cartographer::new("http://mock-rpc".to_string(), create_empty_blocklist())
     }
 
     #[test]
@@ -205,6 +232,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_shield_blocks_malicious_validator() {
+        let blocklist = create_empty_blocklist();
+        let malicious_pk = Pubkey::new_unique();
+        let good_pk = Pubkey::new_unique();
+        let addr1: SocketAddr = "1.1.1.1:80".parse().unwrap();
+        let addr2: SocketAddr = "2.2.2.2:80".parse().unwrap();
+
+        // Add malicious validator to blocklist
+        {
+            let mut guard = blocklist.write().await;
+            guard.insert(malicious_pk);
+        }
+
+        let c = Cartographer::new("http://mock-rpc".to_string(), blocklist);
+
+        // Setup schedule and topology
+        {
+            let mut sched = c.schedule.write().await;
+            sched.insert(100, malicious_pk);
+            sched.insert(101, good_pk);
+        }
+        {
+            let mut nodes = c.node_map.write().await;
+            nodes.insert(malicious_pk, addr1);
+            nodes.insert(good_pk, addr2);
+        }
+
+        // Blocked validator should return None
+        assert_eq!(c.get_target(100).await, None);
+        // Good validator should return address
+        assert_eq!(c.get_target(101).await, Some(addr2));
+    }
+
+    #[tokio::test]
     async fn test_scout_lookahead() {
         let c = create_empty_cartographer();
         let pk1 = Pubkey::new_unique();
@@ -232,5 +293,40 @@ mod tests {
         assert_eq!(targets.len(), 2);
         assert!(targets.contains(&addr1));
         assert!(targets.contains(&addr2));
+    }
+
+    #[tokio::test]
+    async fn test_scout_filters_blocked_validators() {
+        let blocklist = create_empty_blocklist();
+        let blocked_pk = Pubkey::new_unique();
+        let good_pk = Pubkey::new_unique();
+        let blocked_addr: SocketAddr = "1.1.1.1:80".parse().unwrap();
+        let good_addr: SocketAddr = "2.2.2.2:80".parse().unwrap();
+
+        // Block one validator
+        {
+            let mut guard = blocklist.write().await;
+            guard.insert(blocked_pk);
+        }
+
+        let c = Cartographer::new("http://mock-rpc".to_string(), blocklist);
+
+        // Schedule: Slot 101->blocked, 102->good
+        {
+            let mut sched = c.schedule.write().await;
+            sched.insert(101, blocked_pk);
+            sched.insert(102, good_pk);
+        }
+        {
+            let mut nodes = c.node_map.write().await;
+            nodes.insert(blocked_pk, blocked_addr);
+            nodes.insert(good_pk, good_addr);
+        }
+
+        // Scout should only return the good validator
+        let targets = c.get_upcoming_leaders(100, 5).await;
+        assert_eq!(targets.len(), 1);
+        assert!(targets.contains(&good_addr));
+        assert!(!targets.contains(&blocked_addr));
     }
 }

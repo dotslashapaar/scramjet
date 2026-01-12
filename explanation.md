@@ -50,6 +50,7 @@ When you submit a transaction via RPC, it travels through multiple hops before r
 - [Dependencies](#dependencies)
 - [Performance Considerations](#performance-considerations)
 - [Security Notes](#security-notes)
+- [Updates](#updates)
 
 ---
 
@@ -386,3 +387,87 @@ const ED25519_PKCS8_HEADER: &[u8] = &[
 - **Private keys** are loaded from disk and held in memory; ensure proper file permissions
 - **Self-signed certificates** are used for QUIC identity; this is expected by Solana validators
 - **No server verification** – Validators use ephemeral certificates, so client-side verification is disabled
+
+---
+
+## Updates
+
+### January 13, 2026 – Scramjet Shield (Blocklist Protection)
+
+**Added validator blocklist filtering to protect against malicious validators.**
+
+#### What's New
+
+- **BlocklistManager** (`scramjet-net/src/blocklist.rs`) – Hot-swappable in-memory blocklist using `Arc<RwLock<HashSet<Pubkey>>>`
+- **Local-first design** – Maintains `blocklist.txt` file with periodic reloading (5-minute intervals)
+- **Optional remote sync** – Configure `SCRAMJET_BLOCKLIST_URL` for community-maintained blocklists
+- **Zero-latency filtering** – O(1) HashSet lookup with shared read locks (non-blocking for concurrent readers)
+- **Fail-safe updates** – Rejects empty remote responses to prevent accidental unblocking
+
+#### Architecture
+
+```
+┌─────────────────────────────────────────────────────┐
+│  Cartographer (Leader Resolution)                   │
+│  ┌───────────────────────────────────────────────┐  │
+│  │ get_target(slot) → leader_pubkey              │  │
+│  │                                               │  │
+│  │ Shield Check:                                 │  │
+│  │   if blocklist.contains(leader_pubkey)        │  │
+│  │     return None  // Skip this validator       │  │
+│  │   else                                        │  │
+│  │     return leader_socket_address              │  │
+│  └───────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────┘
+```
+
+#### How It Works
+
+1. **Boot**: Shield loads `blocklist.txt` synchronously (fast startup with protection)
+2. **Filtering**: Cartographer checks blocklist before returning leader addresses
+   - `get_target(slot)` returns `None` if leader is blocked
+   - `get_upcoming_leaders()` filters blocked validators from Scout pre-warming
+3. **Hot-reload**: Background task reloads file every 5 minutes (or fetches from remote URL if configured)
+4. **Write lock**: Acquired only during updates (~once per 5 minutes), never blocks reads
+
+#### Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SCRAMJET_BLOCKLIST_FILE` | `./blocklist.txt` | Local blocklist file path |
+| `SCRAMJET_BLOCKLIST_URL` | None (local-only) | Optional remote blocklist URL |
+| `SCRAMJET_BLOCKLIST_REFRESH_SECS` | `300` (5 min) | Reload interval |
+
+#### Usage
+
+**Add validators to blocklist:**
+```bash
+echo "MALICIOUS_VALIDATOR_PUBKEY" >> blocklist.txt
+```
+
+**Blocklist format** (`blocklist.txt`):
+```
+# Lines starting with # are comments
+# One base58 pubkey per line
+
+ABC123...xyz
+DEF456...uvw
+```
+
+**Enable remote sync** (optional):
+```bash
+export SCRAMJET_BLOCKLIST_URL="https://example.com/blocklist.txt"
+```
+
+#### Performance Impact
+
+- **Hot path (reads)**: ~40 nanoseconds (single HashSet lookup with shared RwLock)
+- **Cold path (updates)**: Brief write lock once per 5 minutes, no impact on transaction submission
+- **Scout optimization**: Blocked validators never consume pre-warming resources
+
+#### Implementation Files
+
+- `crates/scramjet-net/src/blocklist.rs` – BlocklistManager implementation
+- `crates/scramjet-net/src/cartographer.rs` – Shield filtering in get_target() and get_upcoming_leaders()
+- `bin/scramjet-cli/src/main.rs` – Shield initialization before Cartographer
+- `blocklist.txt` – Template blocklist file

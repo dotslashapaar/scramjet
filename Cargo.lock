@@ -3401,6 +3401,7 @@ dependencies = [
  "log",
  "quinn",
  "rcgen 0.11.3",
+ "reqwest",
  "rustls",
  "scramjet-common",
  "solana-client",

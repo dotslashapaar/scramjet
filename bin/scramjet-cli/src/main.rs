@@ -3,7 +3,12 @@ use clap::{Parser, Subcommand};
 use dotenv::dotenv;
 use log::{debug, error, info, warn};
 use scramjet_common::Config;
-use scramjet_net::{cartographer::Cartographer, engine::QuicEngine, geyser::spawn_geyser_monitor};
+use scramjet_net::{
+    blocklist::BlocklistManager,
+    cartographer::Cartographer,
+    engine::QuicEngine,
+    geyser::spawn_geyser_monitor,
+};
 use solana_sdk::{
     compute_budget::ComputeBudgetInstruction,
     pubkey::Pubkey,
@@ -82,13 +87,31 @@ async fn main() -> anyhow::Result<()> {
         .map_err(|e| anyhow::anyhow!("Failed to load keypair from {:?}: {}. Use --keypair to specify path.", keypair_path, e))?;
     info!("Identity: {}", identity.pubkey());
 
-    // STEP 4: Initialize Cartographer (cluster map + leader schedule)
+    // STEP 4: Initialize Shield (blocklist protection)
+    info!("Initializing Shield (blocklist protection)...");
+    let shield_manager = Arc::new(BlocklistManager::from_env());
+    
+    // Load local blocklist synchronously (fast boot with protection)
+    let loaded_count = shield_manager.load_local().await;
+    if loaded_count > 0 {
+        info!("Shield: Active with {} blocked validators", loaded_count);
+    } else {
+        warn!("Shield: No local blocklist found. Will fetch from remote.");
+    }
+    
+    // Spawn background updater (hourly refresh from remote)
+    let _shield_updater = shield_manager.clone().spawn_updater();
+
+    // STEP 5: Initialize Cartographer (cluster map + leader schedule)
     info!("Initializing Cartographer with RPC: {}", config.rpc_url);
-    let cartographer = Arc::new(Cartographer::new(config.rpc_url.clone()));
+    let cartographer = Arc::new(Cartographer::new(
+        config.rpc_url.clone(),
+        shield_manager.get_handle(),
+    ));
     cartographer.refresh_topology().await?; // Fetch validator pubkey -> QUIC socket map
     cartographer.update_schedule().await?; // Fetch leader schedule for current epoch
 
-    // STEP 5: Initialize Clock (Geyser hybrid vs RPC polling mode)
+    // STEP 6: Initialize Clock (Geyser hybrid vs RPC polling mode)
     if let Some(ref url) = config.geyser_url {
         info!("MODE: HYBRID (RPC Map + Geyser Clock)");
         info!("   Geyser Endpoint: {}", url);
@@ -131,11 +154,11 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
-    // STEP 6: Initialize QUIC Engine with client certificate
+    // STEP 7: Initialize QUIC Engine with client certificate
     info!("Initializing Engine...");
     let engine = Arc::new(QuicEngine::new(&identity, &config)?);
 
-    // STEP 7: Start Scout (pre-warm connections to upcoming leaders)
+    // STEP 8: Start Scout (pre-warm connections to upcoming leaders)
     let cart_clone = cartographer.clone();
     let engine_clone = engine.clone();
     let scout_interval = config.scout_interval();
