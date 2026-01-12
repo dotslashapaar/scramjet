@@ -1,0 +1,16 @@
+# Scramjet Shield - Validator Blocklist
+# =====================================
+# Add one validator pubkey per line (base58 format).
+# Lines starting with # are comments.
+# 
+# Example:
+# ABC123...xyz (known sandwich bot operator)
+#
+# Find malicious validators:
+# - Check Solana Explorer for validators with suspicious behavior
+# - Community reports on Twitter/Discord
+# - Your own transaction analysis
+#
+# This file is reloaded every 5 minutes without restart.
+# =====================================
+
