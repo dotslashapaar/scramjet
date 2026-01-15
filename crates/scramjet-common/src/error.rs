@@ -35,6 +35,8 @@ pub enum ScramjetError {
     TransportError(#[from] quinn::ConnectionError),
     #[error("QUIC write error: {0}")]
     WriteError(#[from] quinn::WriteError),
+    #[error("QUIC stream closed: {0}")]
+    ClosedStreamError(#[from] quinn::ClosedStream),
     #[error("Stream error: {0}")]
     StreamError(String),
 

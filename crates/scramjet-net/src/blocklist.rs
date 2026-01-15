@@ -178,7 +178,7 @@ impl BlocklistManager {
 
         // Persist to local file first (ensures next boot uses fresh data)
         if let Err(e) = self.persist_to_file(&keys).await {
-            warn!("🛡️ Shield: Failed to persist blocklist: {}", e);
+            warn!("Shield: Failed to persist blocklist: {}", e);
             // Continue anyway - memory update is more important
         }
 
@@ -189,7 +189,7 @@ impl BlocklistManager {
         }
 
         info!(
-            "🛡️ Shield: Updated blocklist with {} validators from remote",
+            "Shield: Updated blocklist with {} validators from remote",
             count
         );
         Ok(count)
@@ -283,7 +283,7 @@ impl BlocklistManager {
         let content: String = keys.iter().map(|pk| format!("{}\n", pk)).collect();
         tokio::fs::write(&self.local_path, content).await?;
         debug!(
-            "🛡️ Shield: Persisted {} keys to {:?}",
+            "Shield: Persisted {} keys to {:?}",
             keys.len(),
             self.local_path
         );
