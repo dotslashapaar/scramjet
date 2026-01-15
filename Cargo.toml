@@ -17,14 +17,14 @@ license = "MIT"
 tokio = { version = "1.35", features = ["full"] }
 
 # --- Solana Ecosystem ---
-solana-sdk = "1.18"
-solana-client = "1.18"
-solana-rpc-client-api = "1.18"
+solana-sdk = "2.1"
+solana-client = "2.1"
+solana-rpc-client-api = "2.1"
 
 # --- Networking (Engine) ---
-quinn = "0.10"
-rustls = { version = "0.21", features = ["dangerous_configuration"] }
-rcgen = "0.11" # For Certificate Generation
+quinn = "0.11"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+rcgen = "0.13" # For Certificate Generation
 
 # --- Utils ---
 anyhow = "1.0"
@@ -36,11 +36,11 @@ dirs = "5.0"
 bincode = "1.3" 
 
 # --- Geyser Integration ---
-yellowstone-grpc-proto = "1.4.0"
-tonic = { version = "0.10", features = ["tls", "tls-roots"] }
+yellowstone-grpc-proto = "10.1"
+tonic = { version = "0.14", features = ["tls-ring", "tls-native-roots", "channel", "transport"] }
 tokio-stream = "0.1"
 futures = "0.3"
-http = "0.2"
+http = "1.0"
 
 dotenv = "0.15"
 

@@ -180,10 +180,10 @@ The Scout background task maintains hot connections to upcoming leaders:
 │  Lookahead: 10 slots                                 │
 │                                                      │
 │  Pre-warmed connections:                             │
-│    Slot 250001 → Validator A → Connection ✓         │
-│    Slot 250002 → Validator A → Connection ✓         │
-│    Slot 250003 → Validator B → Connection ✓         │
-│    Slot 250004 → Validator C → Connection ✓         │
+│    Slot 250001 → Validator A → Connection OK        │
+│    Slot 250002 → Validator A → Connection OK        │
+│    Slot 250003 → Validator B → Connection OK        │
+│    Slot 250004 → Validator C → Connection OK        │
 │    ...                                               │
 └──────────────────────────────────────────────────────┘
 ```
@@ -391,6 +391,75 @@ const ED25519_PKCS8_HEADER: &[u8] = &[
 ---
 
 ## Updates
+
+### January 15, 2026 – QUIC Stream Optimization (Anza Feedback)
+
+**Implemented sequential stream handling and FIFO scheduling to eliminate UDP packet fragmentation.**
+
+#### Background
+
+Triton engineers identified that concurrent stream creation was causing QUIC packet fragmentation, forcing validators to work harder reassembling packets and leading to increased transaction drops. The root cause: multiple streams on the same connection were being sent in parallel, causing their UDP packets to interleave and fragment.
+
+#### Changes Made
+
+1. **Sequential Stream Sending** – Refactored `spam_transactions()` to use a sequential `for` loop instead of parallel `tokio::spawn`. Each transaction now completes as an atomic UDP packet before the next begins.
+
+2. **FIFO Stream Scheduling** – Added `transport_config.send_fairness(false)` to force first-in-first-out stream scheduling, eliminating QUIC's default round-robin fairness that was causing interleaving.
+
+3. **Dependency Upgrades** – Updated core networking stack:
+   - **quinn** 0.10 → 0.11 (adds `send_fairness()` API, `finish()` no longer async)
+   - **rustls** 0.21 → 0.23 (new builder patterns, `CryptoProvider` API)
+   - **rcgen** 0.11 → 0.13 (new `CertifiedKey` pattern)
+   - **solana-sdk** 1.18 → 2.1 (required for dependency compatibility)
+   - **yellowstone-grpc-proto** 1.4 → 10.1
+   - **tonic** 0.10 → 0.14
+
+#### Technical Details
+
+**Before (Parallel):**
+```rust
+for i in 0..count {
+    tokio::spawn(async move {
+        let mut stream = connection.open_uni().await?;
+        stream.write_all(&tx_bytes).await?;
+        stream.finish().await?;  // Multiple streams finishing concurrently
+    });
+}
+```
+
+**After (Sequential):**
+```rust
+for i in 0..count {
+    let mut stream = connection.open_uni().await?;
+    stream.write_all(&tx_bytes).await?;
+    stream.finish()?;  // Complete before next iteration
+}
+```
+
+**FIFO Scheduling** ([identity.rs](crates/scramjet-common/src/identity.rs)):
+```rust
+// CRITICAL: Disable fairness to force FIFO stream scheduling
+// This ensures each transaction completes as an atomic UDP packet before the next starts
+transport_config.send_fairness(false);
+```
+
+#### Impact
+
+- **Reduced Fragmentation** – Transactions arrive as complete, atomic UDP packets
+- **Higher Validator Acceptance** – Agave validators no longer need to reassemble fragmented packets
+- **Lower Latency** – FIFO scheduling removes pacing delays from fairness algorithms
+- **Optimization Focus Shift** – From "sending fast" (client metric) to "being processed fast" (validator metric)
+
+#### Files Modified
+
+- `Cargo.toml` – Updated all dependency versions
+- `crates/scramjet-common/src/identity.rs` – Added `send_fairness(false)`, updated API calls for rustls 0.23/rcgen 0.13
+- `crates/scramjet-common/src/error.rs` – Added `ClosedStreamError` variant
+- `crates/scramjet-net/src/engine.rs` – Removed `.await` from `finish()` calls, updated test helper for quinn 0.11
+- `crates/scramjet-net/src/geyser.rs` – Added new required fields for yellowstone-grpc-proto 10.1
+- `bin/scramjet-cli/src/main.rs` – Converted parallel to sequential sends in `spam_transactions()`
+
+---
 
 ### January 13, 2026 – Scramjet Shield (Blocklist Protection)
 

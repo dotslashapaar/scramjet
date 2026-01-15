@@ -96,6 +96,7 @@ impl GeyserListener {
             "client".to_string(),
             SubscribeRequestFilterSlots {
                 filter_by_commitment: None,
+                interslot_updates: None,
             },
         );
 
@@ -110,6 +111,7 @@ impl GeyserListener {
             commitment: None,
             accounts_data_slice: vec![],
             ping: None,
+            from_slot: None,
         };
 
         let (tx, rx) = mpsc::channel(32);

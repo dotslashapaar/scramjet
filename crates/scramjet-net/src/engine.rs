@@ -46,8 +46,8 @@ impl QuicEngine {
         // Write transaction bytes to stream
         send_stream.write_all(&tx_bytes).await?;
 
-        // Close stream to signal completion
-        send_stream.finish().await?;
+        // Close stream to signal completion (no longer async in quinn 0.11)
+        send_stream.finish()?;
 
         Ok(())
     }
@@ -98,22 +98,28 @@ mod tests {
     use tokio::sync::mpsc;
 
     fn make_server_config() -> (quinn::ServerConfig, Vec<u8>) {
-        let cert = rcgen::generate_simple_self_signed(vec!["solana".into()]).unwrap();
-        let cert_der = cert.serialize_der().unwrap();
-        let key_der = cert.serialize_private_key_der();
-        let key = rustls::PrivateKey(key_der);
-        let cert_chain = vec![rustls::Certificate(cert_der.clone())];
+        use quinn::crypto::rustls::QuicServerConfig;
+        use rustls::pki_types::{CertificateDer, PrivatePkcs8KeyDer};
+        
+        let certified_key = rcgen::generate_simple_self_signed(vec!["solana".into()]).unwrap();
+        let cert_der = certified_key.cert.der().to_vec();
+        let key_der = certified_key.key_pair.serialize_der();
+        
+        let key = PrivatePkcs8KeyDer::from(key_der).into();
+        let cert_chain = vec![CertificateDer::from(cert_der.clone())];
 
         let mut server_crypto = rustls::ServerConfig::builder()
-            .with_safe_defaults()
             .with_no_client_auth()
             .with_single_cert(cert_chain, key)
             .unwrap();
 
         server_crypto.alpn_protocols = vec![b"solana-tpu".to_vec()];
 
+        // Wrap with QuicServerConfig for quinn 0.11
+        let quic_server_config = QuicServerConfig::try_from(server_crypto).unwrap();
+
         (
-            quinn::ServerConfig::with_crypto(Arc::new(server_crypto)),
+            quinn::ServerConfig::with_crypto(Arc::new(quic_server_config)),
             cert_der,
         )
     }
@@ -171,7 +177,7 @@ mod tests {
             tokio::spawn(async move {
                 let mut stream = conn.open_uni().await.expect("Failed to open stream");
                 stream.write_all(&payload).await.expect("Write failed");
-                stream.finish().await.expect("Finish failed");
+                stream.finish().expect("Finish failed");
             });
         }
 

@@ -9,6 +9,7 @@ use scramjet_net::{
     engine::QuicEngine,
     geyser::spawn_geyser_monitor,
 };
+#[allow(deprecated)]
 use solana_sdk::{
     compute_budget::ComputeBudgetInstruction,
     pubkey::Pubkey,
@@ -75,14 +76,15 @@ async fn main() -> anyhow::Result<()> {
         config.geyser_url = Some(geyser);
     }
 
-    let keypair_path = cli.keypair.unwrap_or_else(|| {
-        dirs::home_dir()
-            .unwrap_or_else(|| {
-                // Fall back to current directory if no home directory
-                std::env::current_dir().expect("Cannot determine current directory")
-            })
-            .join(".config/solana/id.json")
-    });
+    let keypair_path = match cli.keypair {
+        Some(p) => p,
+        None => {
+            let base = dirs::home_dir()
+                .or_else(|| std::env::current_dir().ok())
+                .ok_or_else(|| anyhow::anyhow!("Cannot determine home or current directory"))?;
+            base.join(".config/solana/id.json")
+        }
+    };
     let identity = read_keypair_file(&keypair_path)
         .map_err(|e| anyhow::anyhow!("Failed to load keypair from {:?}: {}. Use --keypair to specify path.", keypair_path, e))?;
     info!("Identity: {}", identity.pubkey());
@@ -173,8 +175,10 @@ async fn main() -> anyhow::Result<()> {
                     .await;
                 for target in upcoming {
                     debug!("Scout: Warming up connection to {}", target);
-                    // Pre-warm connections (best-effort, failures are OK)
-                    let _ = engine_clone.get_connection_handle(target).await;
+                    // Pre-warm connections (best-effort, failures logged but not fatal)
+                    if let Err(e) = engine_clone.get_connection_handle(target).await {
+                        debug!("Scout: Failed to warm connection to {}: {}", target, e);
+                    }
                 }
             }
             tokio::time::sleep(scout_interval).await;
@@ -312,33 +316,31 @@ async fn spam_transactions(
     let connection = engine.get_connection_handle(target).await?; // Handshake once
     info!("Pipe Open. Firing {} rounds.", count);
 
-    // Machine gun: fire all transactions in parallel using same connection
-    let mut tasks = Vec::new();
-    for _ in 0..count {
-        let conn_clone = connection.clone();
-        let bytes_clone = tx_bytes.clone();
-        tasks.push(tokio::spawn(async move {
-            // Open new QUIC stream on same connection (multiplexing)
-            match conn_clone.open_uni().await {
-                Ok(mut stream) => {
-                    if let Err(e) = stream.write_all(&bytes_clone).await {
-                        debug!("Stream write failed: {}", e);
-                    }
-                    if let Err(e) = stream.finish().await {
-                        debug!("Stream finish failed: {}", e);
-                    }
+    // Sequential fire: send transactions one at a time to prevent UDP packet fragmentation
+    // Each transaction completes as an atomic packet before the next starts
+    let mut success_count: u64 = 0;
+    let mut fail_count: u64 = 0;
+    for i in 0..count {
+        match connection.open_uni().await {
+            Ok(mut stream) => {
+                if let Err(e) = stream.write_all(&tx_bytes).await {
+                    warn!("Stream write failed (tx {}): {}", i, e);
+                    fail_count += 1;
+                    continue;
                 }
-                Err(e) => {
-                    debug!("Failed to open stream: {}", e);
+                if let Err(e) = stream.finish() {
+                    warn!("Stream finish failed (tx {}): {}", i, e);
+                    fail_count += 1;
+                    continue;
                 }
+                success_count += 1;
             }
-        }));
+            Err(e) => {
+                warn!("Failed to open stream (tx {}): {}", i, e);
+                fail_count += 1;
+            }
+        }
     }
-    // Wait for all sends to complete
-    for task in tasks {
-        // Task join errors (panic/cancel) are acceptable to silence
-        let _ = task.await;
-    }
-    info!("Firing Complete.");
+    info!("Firing Complete. Sent: {}, Failed: {}", success_count, fail_count);
     Ok(())
 }
